@@ -8,3 +8,4 @@ opencv-python-headless
 platformdirs
 pytest>=7.0
 tqdm
+m3u8

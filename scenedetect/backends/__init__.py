@@ -87,6 +87,7 @@ from typing import Dict, Type
 
 # OpenCV must be available at minimum.
 from scenedetect.backends.opencv import VideoCaptureAdapter, VideoStreamCv2
+from scenedetect.backends.ffmpeg import VideoStream_ffmpeg
 
 try:
     from scenedetect.backends.pyav import VideoStreamAv
@@ -108,6 +109,7 @@ AVAILABLE_BACKENDS: Dict[str, Type] = {
             VideoStreamCv2,
             VideoStreamAv,
             VideoStreamMoviePy,
+            VideoStream_ffmpeg,
         ],
     )
 }
