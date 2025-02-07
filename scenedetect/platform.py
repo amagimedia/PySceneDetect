@@ -11,7 +11,7 @@
 #
 """``scenedetect.platform`` Module
 
-This moduke contains all platform/library specific compatibility fixes, as well as some utility
+This module contains all platform/library specific compatibility fixes, as well as some utility
 functions to handle logging and invoking external commands.
 """
 
@@ -296,18 +296,20 @@ def get_system_version_info() -> str:
 
     Used for the `scenedetect version -a` command.
     """
-    output_template = "{:<12} {}"
+    output_template = "{:<16} {}"
     line_separator = "-" * 60
     not_found_str = "Not Installed"
     out_lines = []
 
     # System (Python, OS)
+    output_template = "{:<16} {}"
     out_lines += ["System Info", line_separator]
     out_lines += [
         output_template.format(name, version)
         for name, version in (
             ("OS", "%s" % platform.platform()),
-            ("Python", "%d.%d.%d" % sys.version_info[0:3]),
+            ("Python", "%s %s" % (platform.python_implementation(), platform.python_version())),
+            ("Architecture", " + ".join(platform.architecture())),
         )
     ]
 
@@ -317,6 +319,8 @@ def get_system_version_info() -> str:
         "av",
         "click",
         "cv2",
+        "imageio",
+        "imageio_ffmpeg",
         "moviepy",
         "numpy",
         "platformdirs",
@@ -326,7 +330,10 @@ def get_system_version_info() -> str:
     for module_name in third_party_packages:
         try:
             module = importlib.import_module(module_name)
-            out_lines.append(output_template.format(module_name, module.__version__))
+            if hasattr(module, "__version__"):
+                out_lines.append(output_template.format(module_name, module.__version__))
+            else:
+                out_lines.append(output_template.format(module_name, not_found_str))
         except ModuleNotFoundError:
             out_lines.append(output_template.format(module_name, not_found_str))
 

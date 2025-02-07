@@ -48,7 +48,7 @@ class ValidatedValue(ABC):
     @abstractmethod
     def value(self) -> Any:
         """Get the value after validation."""
-        raise NotImplementedError()
+        ...
 
     @staticmethod
     @abstractmethod
@@ -58,7 +58,13 @@ class ValidatedValue(ABC):
         Raises:
             OptionParseFailure: Value from config file did not meet validation constraints.
         """
-        raise NotImplementedError()
+        ...
+
+    def __repr__(self) -> str:
+        return str(self.value)
+
+    def __str__(self) -> str:
+        return str(self.value)
 
 
 class TimecodeValue(ValidatedValue):
@@ -74,12 +80,6 @@ class TimecodeValue(ValidatedValue):
     @property
     def value(self) -> Union[int, float, str]:
         return self._value
-
-    def __repr__(self) -> str:
-        return str(self.value)
-
-    def __str__(self) -> str:
-        return str(self.value)
 
     @staticmethod
     def from_config(config_value: str, default: "TimecodeValue") -> "TimecodeValue":
@@ -121,12 +121,6 @@ class RangeValue(ValidatedValue):
         """Maximum value of the range."""
         return self._max_val
 
-    def __repr__(self) -> str:
-        return str(self.value)
-
-    def __str__(self) -> str:
-        return str(self.value)
-
     @staticmethod
     def from_config(config_value: str, default: "RangeValue") -> "RangeValue":
         try:
@@ -139,6 +133,47 @@ class RangeValue(ValidatedValue):
             raise OptionParseFailure(
                 "Value must be between %s and %s." % (default.min_val, default.max_val)
             ) from ex
+
+
+class CropValue(ValidatedValue):
+    """Validator for crop region defined as X0 Y0 X1 Y1."""
+
+    _IGNORE_CHARS = [",", "/", "(", ")"]
+    """Characters to ignore."""
+
+    def __init__(self, value: Optional[Union[str, Tuple[int, int, int, int]]] = None):
+        if isinstance(value, CropValue) or value is None:
+            self._crop = value
+        else:
+            crop = ()
+            if isinstance(value, str):
+                translation_table = str.maketrans(
+                    {char: " " for char in ScoreWeightsValue._IGNORE_CHARS}
+                )
+                values = value.translate(translation_table).split()
+                crop = tuple(int(val) for val in values)
+            elif isinstance(value, tuple):
+                crop = value
+            if not len(crop) == 4:
+                raise ValueError("Crop region must be four numbers of the form X0 Y0 X1 Y1!")
+            if any(coordinate < 0 for coordinate in crop):
+                raise ValueError("Crop coordinates must be >= 0")
+            (x0, y0, x1, y1) = crop
+            self._crop = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+    @property
+    def value(self) -> Tuple[int, int, int, int]:
+        return self._crop
+
+    def __str__(self) -> str:
+        return "[%d, %d], [%d, %d]" % self.value
+
+    @staticmethod
+    def from_config(config_value: str, default: "CropValue") -> "CropValue":
+        try:
+            return CropValue(config_value)
+        except ValueError as ex:
+            raise OptionParseFailure(f"{ex}") from ex
 
 
 class ScoreWeightsValue(ValidatedValue):
@@ -160,11 +195,8 @@ class ScoreWeightsValue(ValidatedValue):
             self._value = ContentDetector.Components(*(float(val) for val in values))
 
     @property
-    def value(self) -> Tuple[float, float, float, float]:
+    def value(self) -> ContentDetector.Components:
         return self._value
-
-    def __repr__(self) -> str:
-        return str(self.value)
 
     def __str__(self) -> str:
         return "%.3f, %.3f, %.3f, %.3f" % self.value
@@ -199,9 +231,6 @@ class KernelSizeValue(ValidatedValue):
     def value(self) -> int:
         return self._value
 
-    def __repr__(self) -> str:
-        return str(self.value)
-
     def __str__(self) -> str:
         if self.value is None:
             return "auto"
@@ -215,6 +244,42 @@ class KernelSizeValue(ValidatedValue):
             raise OptionParseFailure(
                 "Value must be an odd integer greater than 1, or set to -1 for auto kernel size."
             ) from ex
+
+
+class EscapedString(ValidatedValue):
+    """Strings that can contain escape sequences, e.g. the literal \n."""
+
+    def __init__(self, value: str, length_limit: int = 0):
+        self._value = value.encode("utf-8").decode("unicode_escape")
+        if length_limit and len(self._value) > length_limit:
+            raise OptionParseFailure(f"Value must be no longer than {length_limit} characters.")
+
+    @property
+    def value(self) -> str:
+        """Get the value after validation."""
+        return self._value
+
+    @staticmethod
+    def from_config(
+        config_value: str, default: "EscapedString", length_limit: int = 0
+    ) -> "EscapedString":
+        try:
+            return EscapedString(config_value, length_limit)
+        except (UnicodeDecodeError, UnicodeEncodeError) as ex:
+            raise OptionParseFailure(
+                "Value must be valid UTF-8 string with escape characters."
+            ) from ex
+
+
+class EscapedChar(EscapedString):
+    """Strings that can contain escape sequences but can be a maximum of 1 character in length."""
+
+    def __init__(self, value: str):
+        super().__init__(value, length_limit=1)
+
+    @staticmethod
+    def from_config(config_value: str, default: "EscapedString") -> "EscapedChar":
+        return EscapedString.from_config(config_value, default, length_limit=1)
 
 
 class TimecodeFormat(Enum):
@@ -268,7 +333,7 @@ CONFIG_MAP: ConfigDict = {
         "weights": ScoreWeightsValue(ContentDetector.DEFAULT_COMPONENT_WEIGHTS),
     },
     "detect-content": {
-        "filter-mode": "merge",
+        "filter-mode": FlashFilter.Mode.MERGE,
         "kernel-size": KernelSizeValue(-1),
         "luma-only": False,
         "min-scene-len": TimecodeValue(0),
@@ -300,22 +365,26 @@ CONFIG_MAP: ConfigDict = {
         "image-height": 0,
         "image-width": 0,
         "no-images": False,
+        "show": False,
     },
     "list-scenes": {
-        "cut-format": "timecode",
+        "cut-format": TimecodeFormat.TIMECODE,
+        "col-separator": EscapedChar(","),
         "display-cuts": True,
         "display-scenes": True,
         "filename": "$VIDEO_NAME-Scenes.csv",
         "output": None,
+        "row-separator": EscapedString("\n"),
         "no-output-file": False,
         "quiet": False,
         "skip-cuts": False,
     },
     "global": {
         "backend": "opencv",
+        "crop": CropValue(),
         "default-detector": "detect-adaptive",
         "downscale": 0,
-        "downscale-method": "linear",
+        "downscale-method": Interpolation.LINEAR,
         "drop-short-scenes": False,
         "frame-skip": 0,
         "merge-last-scene": False,
@@ -333,8 +402,14 @@ CONFIG_MAP: ConfigDict = {
         "output": None,
         "quality": RangeValue(_PLACEHOLDER, min_val=0, max_val=100),
         "scale": 1.0,
-        "scale-method": "linear",
+        "scale-method": Interpolation.LINEAR,
+        "threading": True,
         "width": 0,
+    },
+    "save-qp": {
+        "disable-shift": False,
+        "filename": "$VIDEO_NAME.qp",
+        "output": None,
     },
     "split-video": {
         "args": DEFAULT_FFMPEG_ARGS,
@@ -442,9 +517,30 @@ def _parse_config(config: ConfigParser) -> Tuple[ConfigDict, List[str]]:
                         value_type = "number"
                         out_map[command][option] = config.getfloat(command, option)
                         continue
+                    elif isinstance(CONFIG_MAP[command][option], Enum):
+                        config_value = (
+                            config.get(command, option).replace("\n", " ").strip().upper()
+                        )
+                        try:
+                            parsed = CONFIG_MAP[command][option].__class__[config_value]
+                            out_map[command][option] = parsed
+                        except TypeError:
+                            errors.append(
+                                "Invalid value for [%s] option %s': %s. Must be one of: %s."
+                                % (
+                                    command,
+                                    option,
+                                    config.get(command, option),
+                                    ", ".join(
+                                        str(choice) for choice in CHOICE_MAP[command][option]
+                                    ),
+                                )
+                            )
+                        continue
+
                 except ValueError as _:
                     errors.append(
-                        "Invalid [%s] value for %s: %s is not a valid %s."
+                        "Invalid value for [%s] option '%s': %s is not a valid %s."
                         % (command, option, config.get(command, option), value_type)
                     )
                     continue
@@ -460,7 +556,7 @@ def _parse_config(config: ConfigParser) -> Tuple[ConfigDict, List[str]]:
                         )
                     except OptionParseFailure as ex:
                         errors.append(
-                            "Invalid [%s] value for %s:\n  %s\n%s"
+                            "Invalid value for [%s] option '%s':  %s\nError: %s"
                             % (command, option, config_value, ex.error)
                         )
                     continue
@@ -472,7 +568,7 @@ def _parse_config(config: ConfigParser) -> Tuple[ConfigDict, List[str]]:
                     if command in CHOICE_MAP and option in CHOICE_MAP[command]:
                         if config_value.lower() not in CHOICE_MAP[command][option]:
                             errors.append(
-                                "Invalid [%s] value for %s: %s. Must be one of: %s."
+                                "Invalid value for [%s] option '%s': %s. Must be one of: %s."
                                 % (
                                     command,
                                     option,
@@ -558,8 +654,12 @@ class ConfigRegistry:
                 config_file_contents = config_file.read()
             config.read_string(config_file_contents, source=path)
         except ParsingError as ex:
+            if __debug__:
+                raise
             raise ConfigLoadFailure(self._init_log, reason=ex) from None
         except OSError as ex:
+            if __debug__:
+                raise
             raise ConfigLoadFailure(self._init_log, reason=ex) from None
         # At this point the config file syntax is correct, but we need to still validate
         # the parsed options (i.e. that the options have valid values).
@@ -584,8 +684,8 @@ class ConfigRegistry:
         """Get the current setting or default value of the specified command option."""
         assert command in CONFIG_MAP and option in CONFIG_MAP[command]
         if override is not None:
-            return override
-        if command in self._config and option in self._config[command]:
+            value = override
+        elif command in self._config and option in self._config[command]:
             value = self._config[command][option]
         else:
             value = CONFIG_MAP[command][option]

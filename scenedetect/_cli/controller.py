@@ -16,8 +16,10 @@ import logging
 import os
 import time
 import typing as ty
+import warnings
 
 from scenedetect._cli.context import CliContext
+from scenedetect.backends import VideoStreamCv2, VideoStreamMoviePy
 from scenedetect.frame_timecode import FrameTimecode
 from scenedetect.platform import get_and_create_path
 from scenedetect.scene_manager import CutList, SceneList, get_scenes_from_cuts
@@ -39,6 +41,12 @@ def run_scenedetect(context: CliContext):
         logger.debug("No input specified.")
         return
 
+    # Suppress warnings when reading past EOF in MoviePy (#461).
+    if VideoStreamMoviePy and isinstance(context.video_stream, VideoStreamMoviePy):
+        is_debug = context.config.get_value("global", "verbosity") != "debug"
+        if not is_debug:
+            warnings.filterwarnings("ignore", module="moviepy")
+
     if context.load_scenes_input:
         # Skip detection if load-scenes was used.
         logger.info("Skipping detection, loading scenes from: %s", context.load_scenes_input)
@@ -49,7 +57,10 @@ def run_scenedetect(context: CliContext):
         logger.info("Loaded %d scenes.", len(scenes))
     else:
         # Perform scene detection on input.
-        scenes, cuts = _detect(context)
+        result = _detect(context)
+        if result is None:
+            return
+        scenes, cuts = result
         scenes = _postprocess_scene_list(context, scenes)
         # Handle -s/--stats option.
         _save_stats(context)
@@ -110,7 +121,7 @@ def _detect(context: CliContext) -> ty.Optional[ty.Tuple[SceneList, CutList]]:
 
     # Handle case where video failure is most likely due to multiple audio tracks (#179).
     # TODO(#380): Ensure this does not erroneusly fire.
-    if num_frames <= 0 and context.video_stream.BACKEND_NAME == "opencv":
+    if num_frames <= 0 and isinstance(context.video_stream, VideoStreamCv2):
         logger.critical(
             "Failed to read any frames from video file. This could be caused by the video"
             " having multiple audio tracks. If so, try installing the PyAV backend:\n"
@@ -160,19 +171,16 @@ def _load_scenes(context: CliContext) -> ty.Tuple[SceneList, CutList]:
         csv_headers = next(file_reader)
         if context.load_scenes_column_name not in csv_headers:
             csv_headers = next(file_reader)
-        # Check to make sure column headers are present
+        # Check to make sure column headers are present and then load the data.
         if context.load_scenes_column_name not in csv_headers:
             raise ValueError("specified column header for scene start is not present")
-
         col_idx = csv_headers.index(context.load_scenes_column_name)
-
         cut_list = sorted(
             FrameTimecode(row[col_idx], fps=context.video_stream.frame_rate) - 1
             for row in file_reader
         )
-        # `SceneDetector` works on cuts, so we have to skip the first scene and use the first frame
-        # of the next scene as the cut point. This can be fixed if we used `SparseSceneDetector`
-        # but this part of the API is being reworked and hasn't been used by any detectors yet.
+        # `SceneDetector` works on cuts, so we have to skip the first scene and place the first
+        # cut point where the next scenes starts.
         if cut_list:
             cut_list = cut_list[1:]
 
@@ -182,14 +190,12 @@ def _load_scenes(context: CliContext) -> ty.Tuple[SceneList, CutList]:
             cut_list = [cut for cut in cut_list if cut > context.start_time]
 
         end_time = context.video_stream.duration
-        if context.end_time is not None or context.duration is not None:
-            if context.end_time is not None:
-                end_time = context.end_time
-            elif context.duration is not None:
-                end_time = start_time + context.duration
-            end_time = min(end_time, context.video_stream.duration)
-        cut_list = [cut for cut in cut_list if cut < end_time]
+        if context.end_time is not None:
+            end_time = min(context.end_time, context.video_stream.duration)
+        elif context.duration is not None:
+            end_time = min(start_time + context.duration, context.video_stream.duration)
 
-        return get_scenes_from_cuts(
-            cut_list=cut_list, start_pos=start_time, end_pos=end_time
-        ), cut_list
+        cut_list = [cut for cut in cut_list if cut < end_time]
+        scene_list = get_scenes_from_cuts(cut_list=cut_list, start_pos=start_time, end_pos=end_time)
+
+        return (scene_list, cut_list)

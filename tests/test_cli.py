@@ -17,6 +17,7 @@ import typing as ty
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 
 from scenedetect.video_splitter import is_ffmpeg_available, is_mkvmerge_available
@@ -113,6 +114,24 @@ def test_cli_no_args():
 def test_cli_default_detector():
     """Test `scenedetect` command invoked without a detector."""
     assert invoke_scenedetect("-i {VIDEO} time {TIME}", config_file=None) == 0
+
+
+def test_cli_crop():
+    """Test --crop functionality."""
+    assert invoke_scenedetect("-i {VIDEO} --crop 0 0 256 256 time {TIME}", config_file=None) == 0
+
+
+def test_cli_crop_rejects_invalid():
+    """Test --crop rejects invalid options."""
+    # Outside of video bounds
+    assert (
+        invoke_scenedetect("-i {VIDEO} --crop 4000 0 8000 100 time {TIME}", config_file=None) != 1
+    )
+    assert (
+        invoke_scenedetect("-i {VIDEO} --crop 0 4000 100 8000 time {TIME}", config_file=None) != 1
+    )
+    # Negative numbers
+    assert invoke_scenedetect("-i {VIDEO} --crop 0 0 -256 -256 time {TIME}", config_file=None) != 1
 
 
 @pytest.mark.parametrize("info_command", ["help", "about", "version"])
@@ -294,15 +313,38 @@ def test_cli_list_scenes(tmp_path: Path):
         )
         == 0
     )
-    # Add statsfile
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}-Scenes.csv")
+    assert os.path.exists(output_path)
+    EXPECTED_CSV_OUTPUT = """Timecode List:,00:00:03.754
+Scene Number,Start Frame,Start Timecode,Start Time (seconds),End Frame,End Timecode,End Time (seconds),Length (frames),Length (timecode),Length (seconds)
+1,49,00:00:02.002,2.002,90,00:00:03.754,3.754,42,00:00:01.752,1.752
+2,91,00:00:03.754,3.754,144,00:00:06.006,6.006,54,00:00:02.252,2.252
+"""
+    assert output_path.read_text() == EXPECTED_CSV_OUTPUT
+
+
+def test_cli_list_scenes_skip_cuts(tmp_path: Path):
+    """Test `list-scenes` command with the -s/--skip-cuts option for RFC 4180 compliance."""
+    # Regular invocation
     assert (
         invoke_scenedetect(
-            "-i {VIDEO} -s {STATS} time {TIME} {DETECTOR} list-scenes",
+            "-i {VIDEO} time {TIME} {DETECTOR} list-scenes -s",
             output_dir=tmp_path,
         )
         == 0
     )
-    # Suppress output file
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}-Scenes.csv")
+    assert os.path.exists(output_path)
+    EXPECTED_CSV_OUTPUT = """Scene Number,Start Frame,Start Timecode,Start Time (seconds),End Frame,End Timecode,End Time (seconds),Length (frames),Length (timecode),Length (seconds)
+1,49,00:00:02.002,2.002,90,00:00:03.754,3.754,42,00:00:01.752,1.752
+2,91,00:00:03.754,3.754,144,00:00:06.006,6.006,54,00:00:02.252,2.252
+"""
+    assert output_path.read_text() == EXPECTED_CSV_OUTPUT
+
+
+def test_cli_list_scenes_no_output(tmp_path: Path):
+    """Test `list-scenes` command with the -n flag."""
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}-Scenes.csv")
     assert (
         invoke_scenedetect(
             "-i {VIDEO} time {TIME} {DETECTOR} list-scenes -n",
@@ -310,8 +352,51 @@ def test_cli_list_scenes(tmp_path: Path):
         )
         == 0
     )
-    # TODO: Check for output files from regular invocation.
-    # TODO: Delete scene list and ensure is not recreated using -n.
+    assert not os.path.exists(output_path)
+
+
+def test_cli_list_scenes_custom_delimiter(tmp_path: Path):
+    """Test `list-scenes` command with custom delimiters set in a config file."""
+    config_path = tmp_path.joinpath("config.cfg")
+    config_path.write_text("""
+[list-scenes]
+col-separator = |
+row-separator = \\t
+""")
+    assert (
+        invoke_scenedetect(
+            f"-i {{VIDEO}} -c {config_path} time {{TIME}} {{DETECTOR}} list-scenes",
+            output_dir=tmp_path,
+        )
+        == 0
+    )
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}-Scenes.csv")
+    assert os.path.exists(output_path)
+    EXPECTED_CSV_OUTPUT = """Timecode List:,00:00:03.754
+Scene Number,Start Frame,Start Timecode,Start Time (seconds),End Frame,End Timecode,End Time (seconds),Length (frames),Length (timecode),Length (seconds)
+1,49,00:00:02.002,2.002,90,00:00:03.754,3.754,42,00:00:01.752,1.752
+2,91,00:00:03.754,3.754,144,00:00:06.006,6.006,54,00:00:02.252,2.252
+"""
+    EXPECTED_CSV_OUTPUT = EXPECTED_CSV_OUTPUT.replace(",", "|").replace("\n", "\t")
+    assert output_path.read_text() == EXPECTED_CSV_OUTPUT
+
+
+def test_cli_list_scenes_rejects_multichar_col_separator(tmp_path: Path):
+    """Test `list-scenes` command with custom delimiters set in a config file."""
+    config_path = tmp_path.joinpath("config.cfg")
+    config_path.write_text("""
+[list-scenes]
+col-separator = ||
+""")
+    assert (
+        invoke_scenedetect(
+            f"-i {{VIDEO}} -c {config_path} time {{TIME}} {{DETECTOR}} list-scenes",
+            output_dir=tmp_path,
+        )
+        != 0
+    )
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}-Scenes.csv")
+    assert not os.path.exists(output_path)
 
 
 @pytest.mark.skipif(condition=not is_ffmpeg_available(), reason="ffmpeg is not available")
@@ -360,25 +445,44 @@ def test_cli_split_video_mkvmerge(tmp_path: Path):
         )
         == 0
     )
+    for scene in range(DEFAULT_NUM_SCENES):
+        path = tmp_path / (Path(DEFAULT_VIDEO_PATH).stem + f"-Scene-{1 + scene:03d}.mkv")
+        path.unlink(missing_ok=False)
+    # If only one scene (just using a few frames), should keep same output template.
+    assert (
+        invoke_scenedetect(
+            "-i {VIDEO} -s {STATS} time -e 3 {DETECTOR} split-video -m", output_dir=tmp_path
+        )
+        == 0
+    )
+    path = tmp_path / (Path(DEFAULT_VIDEO_PATH).stem + "-Scene-001.mkv")
+    path.unlink(missing_ok=False)
+    # -m takes precedence over -c
     assert (
         invoke_scenedetect(
             "-i {VIDEO} -s {STATS} time {TIME} {DETECTOR} split-video -m -c", output_dir=tmp_path
         )
         == 0
     )
+    # Custom filename format
+    for scene in range(DEFAULT_NUM_SCENES):
+        path = tmp_path / (Path(DEFAULT_VIDEO_PATH).stem + f"-Scene-{1 + scene:03d}.mkv")
+        path.unlink(missing_ok=False)
     assert (
         invoke_scenedetect(
-            '-i {VIDEO} -s {STATS} time {TIME} {DETECTOR} split-video -m -f "test$VIDEO_NAME"',
+            "-i {VIDEO} -s {STATS} time {TIME} {DETECTOR} split-video -m -f test$VIDEO_NAME",
             output_dir=tmp_path,
         )
         == 0
     )
+    for scene in range(DEFAULT_NUM_SCENES):
+        path = tmp_path / ("test" + Path(DEFAULT_VIDEO_PATH).stem + f"-{1 + scene:03d}.mkv")
+        path.unlink(missing_ok=False)
     # -a/--args and -m/--mkvmerge are mutually exclusive
     assert invoke_scenedetect(
         '-i {VIDEO} -s {STATS} time {TIME} {DETECTOR} split-video -m -a "-c:v libx264"',
         output_dir=tmp_path,
     )
-    # TODO: Check for existence of split video files.
 
 
 def test_cli_save_images(tmp_path: Path):
@@ -389,17 +493,35 @@ def test_cli_save_images(tmp_path: Path):
         )
         == 0
     )
+    images = [image for image in tmp_path.glob("*.jpg")]
+    # Should detect two scenes and generate 3 images per scene with above params.
+    assert len(images) == 6
     # Open one of the created images and make sure it has the correct resolution.
-    # TODO: Also need to test that the right number of images was generated, and compare with
-    # expected frames from the actual video.
-    images = glob.glob(os.path.join(tmp_path, "*.jpg"))
-    assert images
     image = cv2.imread(images[0])
     assert image.shape == (544, 1280, 3)
 
 
+def test_cli_save_images_path_handling(tmp_path: Path):
+    """Test `save-images` ability to handle UTF-8 paths."""
+    assert (
+        invoke_scenedetect(
+            "-i {VIDEO} -s {STATS} time {TIME} {DETECTOR} save-images -f %s"
+            % ("電腦檔案-$SCENE_NUMBER-$IMAGE_NUMBER"),
+            output_dir=tmp_path,
+        )
+        == 0
+    )
+    images = [image for image in tmp_path.glob("電腦檔案-*.jpg")]
+    # Should detect two scenes and generate 3 images per scene with above params.
+    assert len(images) == 6
+    # Check the created images can be read and have the correct size.
+    # We can't use `cv2.imread` here since it doesn't seem to work correctly with UTF-8 paths.
+    image = cv2.imdecode(np.fromfile(images[0], dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    assert image.shape == (544, 1280, 3)
+
+
 # TODO(#134): This works fine with OpenCV currently, but needs to be supported for PyAV and MoviePy.
-def test_cli_save_images_rotation(rotated_video_file, tmp_path):
+def test_cli_save_images_rotation(rotated_video_file, tmp_path: Path):
     """Test that `save-images` command rotates images correctly with the default backend."""
     assert (
         invoke_scenedetect(
@@ -409,8 +531,9 @@ def test_cli_save_images_rotation(rotated_video_file, tmp_path):
         )
         == 0
     )
-    images = glob.glob(os.path.join(tmp_path, "*.jpg"))
-    assert images
+    images = [image for image in tmp_path.glob("*.jpg")]
+    # Should detect two scenes and generate 3 images per scene with above params.
+    assert len(images) == 6
     image = cv2.imread(images[0])
     # Note same resolution as in test_cli_save_images but rotated 90 degrees.
     assert image.shape == (1280, 544, 3)
@@ -428,6 +551,67 @@ def test_cli_export_html(tmp_path: Path):
         == 0
     )
     # TODO: Check for existence of HTML & image files.
+
+
+def test_cli_save_qp(tmp_path: Path):
+    """Test `save-qp` command with and without a custom filename format."""
+    EXPECTED_QP_CONTENTS = """
+0 I -1
+90 I -1
+"""
+    for filename in (None, "custom.txt"):
+        filename_format = f"--filename {filename}" if filename else ""
+        assert (
+            invoke_scenedetect(
+                f"-i {{VIDEO}} time -e 95 {{DETECTOR}} save-qp {filename_format}",
+                output_dir=tmp_path,
+            )
+            == 0
+        )
+        output_path = tmp_path.joinpath(filename if filename else f"{DEFAULT_VIDEO_NAME}.qp")
+        assert os.path.exists(output_path)
+        assert output_path.read_text() == EXPECTED_QP_CONTENTS[1:]
+
+
+def test_cli_save_qp_start_offset(tmp_path: Path):
+    """Test `save-qp` command but using a shifted start time."""
+    # The QP file should always start from frame 0, so we expect a similar result to the above, but
+    # with the frame numbers shifted by the start frame. Note that on the command-line, the first
+    # frame is frame 1, but the first frame in a QP file is indexed by 0.
+    #
+    # Since we are starting at frame 51, we must shift all cuts by 50 frames.
+    EXPECTED_QP_CONTENTS = """
+0 I -1
+40 I -1
+"""
+    assert (
+        invoke_scenedetect(
+            "-i {VIDEO} time -s 51 -e 95 {DETECTOR} save-qp",
+            output_dir=tmp_path,
+        )
+        == 0
+    )
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}.qp")
+    assert os.path.exists(output_path)
+    assert output_path.read_text() == EXPECTED_QP_CONTENTS[1:]
+
+
+def test_cli_save_qp_no_shift(tmp_path: Path):
+    """Test `save-qp` command with start time shifting disabled."""
+    EXPECTED_QP_CONTENTS = """
+50 I -1
+90 I -1
+"""
+    assert (
+        invoke_scenedetect(
+            "-i {VIDEO} time -s 51 -e 95 {DETECTOR} save-qp --disable-shift",
+            output_dir=tmp_path,
+        )
+        == 0
+    )
+    output_path = tmp_path.joinpath(f"{DEFAULT_VIDEO_NAME}.qp")
+    assert os.path.exists(output_path)
+    assert output_path.read_text() == EXPECTED_QP_CONTENTS[1:]
 
 
 @pytest.mark.parametrize("backend_type", ALL_BACKENDS)

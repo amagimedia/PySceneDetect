@@ -16,7 +16,7 @@ jobs:
     env:
       # TODO: Figure out a better way to handle figuring out what version /latest should be,
       # e.g. add a latest version file in main.
-      scenedetect_docs_latest: '0.6.4'
+      scenedetect_docs_latest: '0.6.5'
       scenedetect_docs_dest: ''
 
     steps:
@@ -47,8 +47,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip build wheel virtualenv
           pip install -r docs/requirements.txt
+          pip install -r dist/requirements_windows.txt
           git config --global user.name github-actions
           git config --global user.email github-actions@github.com
+
+      - name: Check CLI Documentation
+        shell: bash
+        run: |
+          if [[ `git status --porcelain=1 | wc -l` -ne 0 ]]; then
+            echo "CLI documentation is of date: docs/cli.rst does not match output after running docs/generate_cli_docs.py!"
+            echo "Re-run `python docs/generate_cli_docs.py` to update and commit the result."
+            exit 1
+          fi
 
       - name: Generate Docs
         run: |

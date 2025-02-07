@@ -1,4 +1,20 @@
-# -*- coding: utf-8 -*-
+#
+#            PySceneDetect: Python-Based Video Scene Detector
+#   -------------------------------------------------------------------
+#     [  Site:    https://scenedetect.com                           ]
+#     [  Docs:    https://scenedetect.com/docs/                     ]
+#     [  Github:  https://github.com/Breakthrough/PySceneDetect/    ]
+#
+# Copyright (C) 2014-2024 Brandon Castellano <http://www.bcastell.com>.
+# PySceneDetect is licensed under the BSD 3-Clause License; see the
+# included LICENSE file, or visit one of the above pages for details.
+#
+
+# Pre-release script to run before invoking `pyinstaller`:
+#
+#     python dist/pre_release.py
+#     pyinstaller dist/scenedetect.spec
+#
 import os
 import sys
 sys.path.append(os.path.abspath("."))
@@ -8,7 +24,7 @@ import scenedetect
 
 VERSION = scenedetect.__version__
 
-run_version_check = ("--ignore-installer" not in sys.argv)
+run_version_check = ("--release" in sys.argv)
 
 if run_version_check:
   installer_aip = ''
@@ -19,10 +35,10 @@ if run_version_check:
 
 with open("dist/.version_info", "wb") as f:
     v = VERSION.split(".")
-    assert 2 <= len(v) <= 3, f"Unrecognized version format: {VERSION}"
-    if len(v) < 3:
+    assert 2 <= len(v) <= 4, f"Unrecognized version format: {VERSION}"
+    while len(v) < 4:
        v.append("0")
-    (maj, min, pat, bld) = v[0], v[1], v[2], 0
+    (maj, min, pat, bld) = v[0], v[1], v[2], v[3]
     # If either major or minor have suffixes, assume it's a dev/beta build and set
     # the final component to 999.
     if not min.isdigit():

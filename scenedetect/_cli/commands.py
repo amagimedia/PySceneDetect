@@ -17,6 +17,7 @@ current command-line context, as well as the processing result (scenes and cuts)
 
 import logging
 import typing as ty
+import webbrowser
 from string import Template
 
 from scenedetect._cli.context import CliContext
@@ -28,9 +29,7 @@ from scenedetect.scene_manager import (
     write_scene_list,
     write_scene_list_html,
 )
-from scenedetect.scene_manager import (
-    save_images as save_images_impl,
-)
+from scenedetect.scene_manager import save_images as save_images_impl
 from scenedetect.video_splitter import split_video_ffmpeg, split_video_mkvmerge
 
 logger = logging.getLogger("pyscenedetect")
@@ -43,6 +42,8 @@ def export_html(
     image_width: int,
     image_height: int,
     html_name_format: str,
+    include_images: bool,
+    show: bool,
 ):
     """Handles the `export-html` command."""
     (image_filenames, output_dir) = (
@@ -50,6 +51,7 @@ def export_html(
         if context.save_images_result is not None
         else (None, context.output_dir)
     )
+
     html_filename = Template(html_name_format).safe_substitute(VIDEO_NAME=context.video_stream.name)
     if not html_filename.lower().endswith(".html"):
         html_filename += ".html"
@@ -58,10 +60,35 @@ def export_html(
         output_html_filename=html_path,
         scene_list=scenes,
         cut_list=cuts,
-        image_filenames=image_filenames,
+        image_filenames=image_filenames if include_images else None,
         image_width=image_width,
         image_height=image_height,
     )
+    if show:
+        webbrowser.open(html_path)
+
+
+def save_qp(
+    context: CliContext,
+    scenes: SceneList,
+    cuts: CutList,
+    output_dir: str,
+    filename_format: str,
+    shift_start: bool,
+):
+    """Handler for the `save-qp` command."""
+    del scenes  # We only use cuts for this handler.
+    qp_path = get_and_create_path(
+        Template(filename_format).safe_substitute(VIDEO_NAME=context.video_stream.name),
+        output_dir,
+    )
+    start_frame = context.start_time.frame_num if context.start_time else 0
+    offset = start_frame if shift_start else 0
+    with open(qp_path, "wt") as qp_file:
+        qp_file.write(f"{0 if shift_start else start_frame} I -1\n")
+        # Place another I frame at each detected cut.
+        qp_file.writelines(f"{cut.frame_num - offset} I -1\n" for cut in cuts)
+    logger.info(f"QP file written to: {qp_path}")
 
 
 def list_scenes(
@@ -76,6 +103,8 @@ def list_scenes(
     display_scenes: bool,
     display_cuts: bool,
     cut_format: str,
+    col_separator: str,
+    row_separator: str,
 ):
     """Handles the `list-scenes` command."""
     # Write scene list CSV to if required.
@@ -96,6 +125,8 @@ def list_scenes(
                 scene_list=scenes,
                 include_cut_list=not skip_cuts,
                 cut_list=cuts,
+                col_separator=col_separator,
+                row_separator=row_separator,
             )
     # Suppress output if requested.
     if quiet:
@@ -146,6 +177,7 @@ def save_images(
     height: int,
     width: int,
     interpolation: Interpolation,
+    threading: bool,
 ):
     """Handles the `save-images` command."""
     del cuts  # save-images only uses scenes.
@@ -164,6 +196,7 @@ def save_images(
         height=height,
         width=width,
         interpolation=interpolation,
+        threading=threading,
     )
     # Save the result for use by `export-html` if required.
     context.save_images_result = (images, output_dir)
@@ -181,6 +214,9 @@ def split_video(
 ):
     """Handles the `split-video` command."""
     del cuts  # split-video only uses scenes.
+
+    if use_mkvmerge:
+        name_format = name_format.removesuffix("-$SCENE_NUMBER")
 
     # Add proper extension to filename template if required.
     dot_pos = name_format.rfind(".")

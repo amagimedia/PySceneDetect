@@ -32,6 +32,13 @@ import numpy
 from scenedetect.stats_manager import StatsManager
 
 
+# TODO(v0.7): Add a new base class called just "Detector" to eventually replace SceneDetector.
+#
+# class Detector:
+#     def process(buffer: ty.List[ty.Tuple[numpy.ndarray, FrameTimecode]]):
+#         # Return EventType.CUT, FADE_IN, FADE_OUT, etc...
+#         pass
+#
 class SceneDetector:
     """Base class to inherit from when implementing a scene detection algorithm.
 
@@ -64,6 +71,8 @@ class SceneDetector:
 
             True otherwise (i.e. the frame_img passed to process_frame is required
             to be passed to process_frame for the given frame_num).
+
+        :meta private:
         """
         metric_keys = self.get_metrics()
         return not metric_keys or not (
@@ -123,6 +132,7 @@ class SceneDetector:
         return 0
 
 
+# TODO(v0.7): Remove this early, no point in keeping it around.
 class SparseSceneDetector(SceneDetector):
     """Base class to inherit from when implementing a sparse scene detection algorithm.
 
@@ -132,6 +142,8 @@ class SparseSceneDetector(SceneDetector):
     as opposed to just a single cut.
 
     An example of a SparseSceneDetector is the MotionDetector.
+
+    :meta private:
     """
 
     def process_frame(
@@ -160,13 +172,22 @@ class SparseSceneDetector(SceneDetector):
 
 
 class FlashFilter:
+    """Filters fast-cuts to enforce minimum scene length."""
+
     class Mode(Enum):
+        """Which mode the filter should use for enforcing minimum scene length."""
+
         MERGE = 0
         """Merge consecutive cuts shorter than filter length."""
         SUPPRESS = 1
         """Suppress consecutive cuts until the filter length has passed."""
 
     def __init__(self, mode: Mode, length: int):
+        """
+        Arguments:
+            mode: The mode to use when enforcing `length`.
+            length: Number of frames to use when filtering cuts.
+        """
         self._mode = mode
         self._filter_length = length  # Number of frames to use for activating the filter.
         self._last_above = None  # Last frame above threshold.
@@ -176,7 +197,6 @@ class FlashFilter:
 
     @property
     def max_behind(self) -> int:
-        """Maximum number of frames a filtered cut can be behind the current frame."""
         return 0 if self._mode == FlashFilter.Mode.SUPPRESS else self._filter_length
 
     def filter(self, frame_num: int, above_threshold: bool) -> ty.List[int]:
