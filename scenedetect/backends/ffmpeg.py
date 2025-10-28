@@ -421,6 +421,8 @@ class VideoStream_ffmpeg(VideoStream):
                 self._frame = next(self.frame_iterator)
             except RecursionError:
                 return False
+            except StopIteration:
+                return False
             except Exception as e:
                 self._frame = last_frame
                 return self.read(decode, advance=True)
